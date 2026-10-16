@@ -7,11 +7,10 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.config import JWT_SECRET, JWT_EXPIRE_MINUTES
 from app.database import get_db
-from app.models import User
+from app.models import Tenant, User
 
 bearer = HTTPBearer(auto_error=False)
 ADMIN_ROLES = frozenset({'PLATFORM_OPS', 'TENANT_IT_ADMIN'})
@@ -48,9 +47,18 @@ def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(
         raise HTTPException(status_code=401, detail='User inactive or not found')
     return user
 
-def require_admin(user: User = Depends(get_current_user)) -> User:
+def require_admin(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
+    """Admin role + tenant membership. Suspended tenants cannot use Admin APIs."""
     if user.role_code not in ADMIN_ROLES:
         raise HTTPException(status_code=403, detail='Admin role required')
+    if user.role_code != 'PLATFORM_OPS':
+        if not user.tenant_id:
+            raise HTTPException(status_code=403, detail='Tenant membership required for Admin access')
+        tenant = db.get(Tenant, user.tenant_id)
+        if not tenant:
+            raise HTTPException(status_code=403, detail='Tenant membership invalid')
+        if tenant.status == 'SUSPENDED':
+            raise HTTPException(status_code=403, detail='Tenant is SUSPENDED; Admin access denied')
     return user
 
 def require_platform(user: User = Depends(require_admin)) -> User:
@@ -62,9 +70,15 @@ def is_platform(user: User) -> bool:
     return user.role_code == 'PLATFORM_OPS'
 
 def permitted_tenant(user: User, requested_tenant: str | None) -> str | None:
-    """On reads, None means all for platform operations; tenant admins are always scoped."""
+    """Resolve list/filter scope.
+
+    Platform Ops: None means all demo tenants; a concrete id scopes to one tenant.
+    Tenant Admins: always forced to their own tenant_id (UI filter is not a security boundary).
+    """
     if is_platform(user):
         return requested_tenant
+    if not user.tenant_id:
+        raise HTTPException(status_code=403, detail='Tenant membership required')
     if requested_tenant and requested_tenant != user.tenant_id:
         raise HTTPException(status_code=403, detail='Cross-tenant access denied')
     return user.tenant_id
@@ -76,5 +90,10 @@ def mutation_tenant(user: User, requested_tenant: str | None) -> str:
     return tenant_id
 
 def assert_resource_access(user: User, tenant_id: str | None) -> None:
-    if not is_platform(user) and tenant_id != user.tenant_id:
+    """Deny Tenant Admins from touching another organization's resource."""
+    if is_platform(user):
+        return
+    if not user.tenant_id:
+        raise HTTPException(status_code=403, detail='Tenant membership required')
+    if tenant_id != user.tenant_id:
         raise HTTPException(status_code=403, detail='Cross-tenant access denied')

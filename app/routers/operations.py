@@ -109,12 +109,23 @@ def financial_items(tenant_id:str|None=None,status:str|None=None,limit:int=Query
     return db.scalars(stmt.order_by(FinancialItem.created_at.desc()).limit(limit).offset(offset)).all()
 
 @router.get('/permissions')
-def local_permissions(actor:User=Depends(require_admin)):
+def local_permissions(db:Session=Depends(get_db),actor:User=Depends(require_admin)):
     # This describes local-demo access only; it is NOT the client-approved RBAC/ABAC matrix.
+    tenant=db.get(Tenant,actor.tenant_id) if actor.tenant_id else None
     return {
         'role_code':actor.role_code,
+        'tenant_id':actor.tenant_id,
+        'tenant_name':tenant.name if tenant else None,
+        'tenant_status':tenant.status if tenant else None,
         'tenant_scope':'ALL_DEMO_TENANTS' if is_platform(actor) else 'OWN_TENANT_ONLY',
+        'isolation':'API-enforced; UI filter is not a security boundary',
         'allowed_modules':[item['key'] for item in NAV_ITEMS],
-        'restrictions':['tenant_admin_cannot_change_tenant_status_or_operating_model','no_live_claim_qa_finance_mutations'],
+        'restrictions':[
+            'tenant_admin_cannot_change_tenant_status_or_operating_model',
+            'tenant_admin_cannot_provision_TENANT_IT_ADMIN',
+            'tenant_admin_cannot_create_or_activate_tenants',
+            'suspended_tenant_blocks_admin_access',
+            'no_live_claim_qa_finance_mutations',
+        ],
         'note':'Generic demo permissions, not ClaimSpire PDP policy'
     }

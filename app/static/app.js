@@ -1,6 +1,6 @@
 /* ClaimSpire self-contained ADMIN DEMO. Only synthetic local records; not production controls. */
 const BASE = '/api/v1';
-const state = {token:sessionStorage.getItem('claimspire_demo_token')||'', user:null, tenants:[], tenant:'', section:'overview', roles:[], dialogAction:null, navigation:[]};
+const state = {token:sessionStorage.getItem('claimspire_demo_token')||'', user:null, permissions:null, tenants:[], tenant:'', section:'overview', roles:[], dialogAction:null, navigation:[]};
 const NAV = [
  ['overview','◫','Overview','Cross-surface operational summary'],
  ['tenants','▣','Tenants','Organization settings and operating models'],
@@ -43,9 +43,14 @@ function loading(){return '<div class="panel"><div class="empty">Loading local d
 function actionButton(label,action,id='',variant='subtle'){return `<button class="btn small ${variant==='primary'?'primary':'subtle'}" data-action="${E(action)}" data-id="${E(id)}">${E(label)}</button>`}
 function setHeader(title,sub,actions=''){$('page-title').textContent=title;$('page-subtitle').textContent=sub;$('crumb-current').textContent=title;$('head-actions').innerHTML=actions}
 async function initialize(){
- try{state.user=await api('/auth/me');if(!['PLATFORM_OPS','TENANT_IT_ADMIN'].includes(state.user.role_code))throw Error('This demo account has no Admin panel access');state.tenants=await api('/admin/tenants');
+ try{state.user=await api('/auth/me');if(!['PLATFORM_OPS','TENANT_IT_ADMIN'].includes(state.user.role_code))throw Error('This demo account has no Admin panel access');
+  state.permissions=await api('/admin/permissions');
+  state.tenants=await api('/admin/tenants');
   if(state.user.role_code!=='PLATFORM_OPS'){state.tenant=state.user.tenant_id||'';}
-  $('login-overlay').hidden=true;$('app').hidden=false;$('role-chip').textContent=human(state.user.role_code);renderNav();renderTenantFilter();await navigate('overview');
+  $('login-overlay').hidden=true;$('app').hidden=false;
+  const scope=state.permissions.tenant_scope==='ALL_DEMO_TENANTS'?'Platform · all tenants':(state.permissions.tenant_name||'Own tenant');
+  $('role-chip').textContent=human(state.user.role_code)+' · '+scope;
+  renderNav();renderTenantFilter();await navigate('overview');
  }catch(err){state.token='';sessionStorage.removeItem('claimspire_demo_token');$('login-overlay').hidden=false;$('app').hidden=true;$('login-error').textContent=err.message}
 }
 function renderNav(){ $('nav').innerHTML=NAV.map(([key,ico,title])=>`<button class="nav-item ${state.section===key?'active':''}" data-section="${key}"><span class="nav-icon">${ico}</span>${E(title)}</button>`).join(''); }
@@ -55,16 +60,24 @@ async function overview(){
  const [stats,flow,auditRows,info]=await Promise.all([api(scoped('/admin/dashboard/summary')),api(scoped('/admin/workflow-stages')),api(scoped('/admin/audit-events')),api('/admin/implementation-readiness')]);
  let counts=Object.entries(stats.claim_statuses||{});const max=Math.max(...counts.map(([,n])=>n),1);
  const bars=counts.map(([label,n])=>`<div class="bar-row"><label>${E(human(label))}</label><div class="kpi-bar"><div class="kpi-bar-fill" style="width:${Math.round(100*n/max)}%"></div></div><b>${n}</b></div>`).join('');
- $('content-area').innerHTML=`<div class="stat-grid">${stat('Active demo tenants',stats.tenant_count,'▣')}${stat('Total claim records',stats.claims,'▤')}${stat('Field assignments',stats.assignments,'↗')}${stat('QA reviews',stats.qa_reviews,'✓')}</div>`+
- `<div class="panels-grid">${panel('Claim lifecycle distribution',bars||'<div class="empty">No claims</div>','Synthetic records by high-level stage')}${panel('System setup snapshot',`<div class="info-grid">${cardText('User profiles',`${stats.users} users`)}${cardText('Configured features',`${stats.configured_features} flags`)}${cardText('Financial items',`${stats.financial_items} records`)}${cardText('Integrations',`${stats.integrations} demo entries`)}</div>`,'Illustrative configuration counters')}</div>`+
+ const multi=`<div class="callout"><b>Multi-tenant isolation (demo)</b><p>${state.user.role_code==='PLATFORM_OPS'?'You can view all demo organizations and optionally filter by tenant. API checks still enforce access on every request.':'You are scoped to <strong>'+E(state.permissions?.tenant_name||'your organization')+'</strong> only. Requests for another tenant return 403 — the UI filter is not the security boundary.'}</p></div>`;
+ $('content-area').innerHTML=multi+`<div class="stat-grid">${stat('Active demo tenants',stats.tenant_count,'▣')}${stat('Total claim records',stats.claims,'▤')}${stat('Field assignments',stats.assignments,'↗')}${stat('QA reviews',stats.qa_reviews,'✓')}</div>`+ `<div class="panels-grid">${panel('Claim lifecycle distribution',bars||'<div class="empty">No claims</div>','Synthetic records by high-level stage')}${panel('System setup snapshot',`<div class="info-grid">${cardText('User profiles',`${stats.users} users`)}${cardText('Configured features',`${stats.configured_features} flags`)}${cardText('Financial items',`${stats.financial_items} records`)}${cardText('Integrations',`${stats.integrations} demo entries`)}</div>`,'Illustrative configuration counters')}</div>`+
  panel('Claim journey',`<div class="stage-grid">${flow.flow.map(s=>`<div class="stage-step"><b>${E(s.name)}</b><small>${E(s.main_persona)}</small><div class="stage-count">${s.demo_claim_count}</div></div>`).join('')}</div>`,'Desk-only cases may bypass field inspection. Specialist tracks can run in parallel.',`<span class="tag">READ-ONLY</span>`)+
  `<div class="panels-grid">${panel('Recent changes',table(['Action','Target','When'],auditRows.slice(0,5).map(x=>[E(x.action),E(x.entity_type),E(niceDate(x.created_at))])),'Local append-only demo events')}${panel('Scope checkpoint',`<p class="muted" style="font-size:12px;margin-bottom:14px">${info.open_decisions.length} open design/governance questions are documented. These do not prevent the local demonstration.</p><div class="action-row">${actionButton('Review delivery readiness','goto','readiness','primary')}</div><div class="hint">Signed Phase 1 internal Admin focus: Platform Ops AI controls and governance. Other demo modules are illustrative.</div>`,'SOW-aligned production planning')}</div>`;
 }
 async function tenants(){
  const rows=state.tenant?state.tenants.filter(x=>x.id===state.tenant):state.tenants;
- setHeader('Tenants','Organizations and simplified operating-model settings',state.user.role_code==='PLATFORM_OPS'?actionButton('+ Add demo tenant','new-tenant','','primary'):'');
- $('content-area').innerHTML=panel('Tenant directory',table(['Organization','Slug','Operating model','Status','Action'],rows.map(t=>[`<strong>${E(t.name)}</strong><small>${E(t.id)}</small>`,E(t.slug),badge(t.operating_model),badge(t.status),actionButton('Edit','edit-tenant',t.id)])),'Phase 1: managed initial tenant activation; full self-service administration deferred.')+
- `<div class="callout"><b>Source vs prototype</b><p>Creating additional tenants from this screen is a mock demonstration feature; it is not a committed production tenant onboarding interface.</p></div>`;
+ const setups=await api(scoped('/admin/organization-setup'));
+ const setupByTenant=Object.fromEntries(setups.map(s=>[s.tenant_id,s]));
+ setHeader('Tenants','Register organizations, track setup status, and activate after approved onboarding',state.user.role_code==='PLATFORM_OPS'?actionButton('+ Register organization','new-tenant','','primary'):'');
+ $('content-area').innerHTML=panel('Tenant directory',table(['Organization','Slug','Type / Model','Lifecycle','Action'],rows.map(t=>{
+   const setup=setupByTenant[t.id];
+   const actions=[actionButton('Edit','edit-tenant',t.id)];
+   if(state.user.role_code==='PLATFORM_OPS'&&t.status!=='ACTIVE'&&setup?.status==='APPROVED')actions.push(actionButton('Activate','activate-tenant',t.id,'primary'));
+   if(state.user.role_code==='PLATFORM_OPS'&&t.status==='ACTIVE')actions.push(actionButton('Suspend','suspend-tenant',t.id));
+   return [`<strong>${E(t.name)}</strong><small>${E(t.id)}</small>`,E(t.slug),`${badge(setup?.organization_type||'—')} ${badge(t.operating_model)}`,`${badge(t.status)} <small>Setup: ${E(human(setup?.status||'—'))}</small>`,actions.join(' ')];
+ })),'REGISTERED tenants are not operational until setup is approved and Platform Ops activates them.')+
+ `<div class="callout"><b>Registration vs activation</b><p>Creating an organization starts onboarding in REGISTERED/DRAFT state. Approval of organization setup does not by itself mark the tenant ACTIVE.</p></div>`;
 }
 
 // Organization onboarding demonstrates a guided lifecycle, not approved future-tenant self service.
@@ -87,17 +100,19 @@ async function onboarding(){
    const ready=await api('/admin/organization-setup/'+setup.tenant_id+'/readiness');
    const isEditable=['DRAFT','CHANGES_REQUESTED'].includes(setup.status);
    const progress=Math.round(ready.completed_required_fields/ready.total_required_fields*100);
-   let item=`<div class="onboard-head"><div><div class="eyebrow">${E(setup.organization_type==='IA_FIRM'?'IA / INSPECTION FIRM':'CARRIER / TPA')}</div><h3>${E(tenantName(setup.tenant_id))}</h3><p class="muted">Responsible admin: ${E(setup.responsible_user_id?.slice(0,8)||'Not selected')} · Status ${E(human(setup.status))}</p></div>${badge(setup.status)}</div>`;
+   const tenant=state.tenants.find(t=>t.id===setup.tenant_id);
+   let item=`<div class="onboard-head"><div><div class="eyebrow">${E(setup.organization_type==='IA_FIRM'?'IA / INSPECTION FIRM':'CARRIER / TPA')}</div><h3>${E(tenantName(setup.tenant_id))}</h3><p class="muted">Responsible admin: ${E(setup.responsible_user_id?.slice(0,8)||'Not selected')} · Setup ${E(human(setup.status))} · v${E(setup.version)} · Tenant ${E(human(tenant?.status||ready.tenant_status||'—'))}</p></div>${badge(setup.status)}</div>`;
    item+=`<div class="progress-track"><div class="progress-fill" style="width:${progress}%"></div></div><p class="muted mini-margin">${ready.completed_required_fields}/${ready.total_required_fields} required fields complete · ${ready.missing_fields.length} missing</p>`;
    item+=`<div class="setup-grid">${catalogue.sections.map(section=>{
      const filled=(setup.sections||{})[section.key]||{};
      const gaps=section.required.filter(name=>filled[name]===undefined||filled[name]===''||(Array.isArray(filled[name])&&!filled[name].length));
      return `<div class="setup-card"><div class="labelrow"><b>${E(section.label)}</b>${gaps.length?badge('PENDING'):badge('READY')}</div><p>${E(section.fields.map(f=>f+': '+(Array.isArray(filled[f])?filled[f].join(', '):(filled[f]||'—'))).join(' · '))}</p>${isEditable?actionButton('Edit details','setup-edit',setup.tenant_id+'|'+section.key):''}</div>`;
    }).join('')}</div>`;
-   item+=`<div class="action-row" style="margin-top:14px">${isEditable?actionButton('Assign setup owner','setup-owner',setup.tenant_id):''}${isEditable?actionButton('Submit for review','setup-submit',setup.tenant_id,'primary'):''}${setup.status==='IN_REVIEW'&&state.user.role_code==='PLATFORM_OPS'?actionButton('Approve setup','setup-approve',setup.tenant_id,'primary')+actionButton('Return for changes','setup-return',setup.tenant_id):''}</div>`;
+   item+=`<div class="action-row" style="margin-top:14px">${isEditable?actionButton('Assign setup owner','setup-owner',setup.tenant_id):''}${isEditable?actionButton('Submit for review','setup-submit',setup.tenant_id,'primary'):''}${setup.status==='IN_REVIEW'&&state.user.role_code==='PLATFORM_OPS'?actionButton('Approve setup','setup-approve',setup.tenant_id,'primary')+actionButton('Return for changes','setup-return',setup.tenant_id):''}${setup.status==='APPROVED'&&state.user.role_code==='PLATFORM_OPS'&&tenant?.status!=='ACTIVE'?actionButton('Activate tenant','activate-tenant',setup.tenant_id,'primary'):''}${actionButton('View submissions','setup-submissions',setup.tenant_id)}</div>`;
    if(ready.missing_fields.length)item+=`<div class="hint"><strong>Pending details:</strong> ${E(ready.missing_fields.join(', '))}</div>`;
+   if(ready.validation_issues?.length)item+=`<div class="hint"><strong>Validation issues:</strong> ${E(ready.validation_issues.map(i=>i.field+': '+i.error).join(', '))}</div>`;
    if(setup.review_note)item+=`<div class="hint info-blue">Reviewer note: ${E(setup.review_note)}</div>`;
-   content.push(panel('Organization setup journey',item, 'Five provisional collection groups. Setup approval is local and does not provision a production tenant.'));
+   content.push(panel('Organization setup journey',item, 'Five provisional collection groups. Setup approval is separate from tenant activation.'));
  }
  setHeader('Organization Setup','Guided collection, readiness, reviewer decision and organization structure');
  $('content-area').innerHTML=`<div class="callout"><b>From Pre-Phase I of the FigJam swimlane</b><p>Establish operating model → users and permissions → teams/queues → controls → governance. This local page adds a proposed five-section collection form and simulated review. The exact five named collection flows and final approver remain pending client/design confirmation.</p></div>`+content.join('');
@@ -146,7 +161,7 @@ async function readiness(){
 }
 async function audit(){const data=await api(scoped('/admin/audit-events'));$('content-area').innerHTML=panel('Administrative action history',table(['Action / Subject','Entity','Tenant','Timestamp','Detail'],data.map(x=>[`<strong>${E(x.action)}</strong><small>${E(x.actor_id?.slice(0,8)||'System')}</small>`,E(x.entity_type),E(tenantName(x.tenant_id)),E(niceDate(x.created_at)),`<small>${E(clip(JSON.stringify(x.detail)))}</small>`])),'Local append-only demo events, not a tamper-evident production audit ledger.');}
 function field(name,label,type='text',value='',options=null){let control;if(options){control=`<select id="field-${E(name)}" name="${E(name)}">${options.map(x=>`<option value="${E(x.value)}" ${String(x.value)===String(value)?'selected':''}>${E(x.label)}</option>`).join('')}</select>`}else control=`<input id="field-${E(name)}" name="${E(name)}" type="${E(type)}" value="${E(value)}" ${type==='password'?'autocomplete="new-password"':''} required>`;return `<div class="field"><label for="field-${E(name)}">${E(label)}</label>${control}</div>`}
-function openDialog(title,description,fields,run){$('dialog-title').textContent=title;$('dialog-description').textContent=description;$('dialog-fields').innerHTML=fields;$('dialog-error').textContent='';state.dialogAction=run;$('edit-dialog').showModal()}
+function openDialog(title,description,fields,run){$('dialog-title').textContent=title;$('dialog-description').textContent=description;$('dialog-fields').innerHTML=fields||'';$('dialog-error').textContent='';state.dialogAction=run;$('edit-dialog').showModal()}
 function canCreateTenant(){return state.user?.role_code==='PLATFORM_OPS'}
 function selectedTenant(){return state.tenant||state.user.tenant_id||state.tenants[0]?.id}
 function selectOptions(data,mapper){return data.map(mapper)}
@@ -159,19 +174,30 @@ async function performAction(action,id){
    if(!setup||!sec)throw Error('Setup section missing');
    return openDialog('Edit · '+sec.label,'Five-section draft collection model; these are provisional fields for the demonstration.',setupSectionInput(sec,(setup.sections||{})[secKey]||{}),async v=>{
      if('lob_codes' in v)v.lob_codes=v.lob_codes.split(',').map(x=>x.trim()).filter(Boolean);
-     await api('/admin/organization-setup/'+tenantId+'/sections/'+secKey,{method:'PUT',body:JSON.stringify({data:v})});
+     await api('/admin/organization-setup/'+tenantId+'/sections/'+secKey,{method:'PUT',body:JSON.stringify({data:v,expected_version:setup.version})});
    });
  }
  if(action==='setup-owner'){
+   const setup=state.setups.find(s=>s.tenant_id===id);
    const people=await api('/admin/users?tenant_id='+encodeURIComponent(id));
    const options=people.filter(x=>x.is_active&&x.role_code!=='PLATFORM_OPS').map(x=>({value:x.id,label:x.name+' — '+human(x.role_code)}));
    if(!options.length)throw Error('Create an active tenant user before assigning setup ownership.');
-   return openDialog('Assign responsible administrator','This person coordinates collecting setup data. It does not define the final approval role.',field('responsible_user_id','Responsible user','text',options[0].value,options),async v=>api('/admin/organization-setup/'+id+'/owner',{method:'PUT',body:JSON.stringify(v)}));
+   return openDialog('Assign responsible administrator','This person coordinates collecting setup data. It does not define the final approval role.',field('responsible_user_id','Responsible user','text',options[0].value,options),async v=>api('/admin/organization-setup/'+id+'/owner',{method:'PUT',body:JSON.stringify({...v,expected_version:setup?.version})}));
  }
- if(action==='setup-submit')return openDialog('Submit organization for review','Submission is blocked if any required demo field is missing or no owner is assigned.',field('reason','Submission reason','text','Initial setup ready for review'),async v=>api('/admin/organization-setup/'+id+'/submit',{method:'POST',body:JSON.stringify(v)}));
+ if(action==='setup-submit'){const setup=state.setups.find(s=>s.tenant_id===id);return openDialog('Submit organization for review','Creates an immutable submission snapshot. Blocked if required fields, validation, or owner are missing.',field('reason','Submission reason','text','Initial setup ready for review'),async v=>api('/admin/organization-setup/'+id+'/submit',{method:'POST',body:JSON.stringify({...v,expected_version:setup?.version})}));}
  if(action==='setup-approve'||action==='setup-return'){
-   const approve=action==='setup-approve';
-   return openDialog(approve?'Approve organization setup':'Return setup for changes','Platform Operations is the provisional demo reviewer. The actual client/design approver is not yet established.',field('note','Review note','text',approve?'Demo setup reviewed and approved':'Please correct the indicated setup details'),async v=>api('/admin/organization-setup/'+id+'/decision',{method:'POST',body:JSON.stringify({decision:approve?'APPROVE':'RETURN_FOR_CHANGES',note:v.note})}));
+   const approve=action==='setup-approve';const setup=state.setups.find(s=>s.tenant_id===id);
+   return openDialog(approve?'Approve organization setup':'Return setup for changes','Platform Operations is the provisional demo reviewer. Approval does not activate the tenant.',field('note','Review note','text',approve?'Demo setup reviewed and approved':'Please correct the indicated setup details'),async v=>api('/admin/organization-setup/'+id+'/decision',{method:'POST',body:JSON.stringify({decision:approve?'APPROVE':'RETURN_FOR_CHANGES',note:v.note,expected_version:setup?.version})}));
+ }
+ if(action==='setup-submissions'){
+   const rows=await api('/admin/organization-setup/'+id+'/submissions');
+   return openDialog('Submission history','Immutable snapshots created on each submit.',table(['Version','Decision','Reason','When'],rows.map(r=>[E('v'+r.version),E(r.decision||'PENDING'),E(r.submit_reason),E(niceDate(r.created_at))])||'<div class="empty">No submissions yet</div>'),async()=>{});
+ }
+ if(action==='activate-tenant'){
+   return openDialog('Activate tenant','Marks the organization ACTIVE after approved setup. Demo only — no infrastructure is provisioned.','',async()=>api('/admin/tenants/'+id+'/activate',{method:'POST'}));
+ }
+ if(action==='suspend-tenant'){
+   return openDialog('Suspend tenant','Sets tenant lifecycle to SUSPENDED for the local demo.','',async()=>api('/admin/tenants/'+id+'/suspend',{method:'POST'}));
  }
  if(action==='new-team'){
    const tid=selectedTenant();const users=await api('/admin/users?tenant_id='+encodeURIComponent(tid));
@@ -195,9 +221,14 @@ async function performAction(action,id){
      if(response.reassignment_status==='REVIEW_REQUIRED')notification('Status updated. Assigned claim ownership requires manual review.');
    });
  }
- if(action==='new-tenant'){if(!canCreateTenant())return notification('Platform operator required',true);return openDialog('Add demo tenant','A new synthetic tenant profile will be created. No tenant infrastructure is provisioned.',field('name','Organization name')+field('slug','Unique slug')+field('operating_model','Operating model','text','HYBRID'),async v=>api('/admin/tenants',{method:'POST',body:JSON.stringify(v)}));}
- if(action==='edit-tenant'){const t=state.tenants.find(x=>x.id===id);return openDialog('Edit organization',`Updates only the local demo record for ${t.name}.`,field('name','Organization name','text',t.name),async v=>api('/admin/tenants/'+id,{method:'PATCH',body:JSON.stringify(v)}));}
- if(action==='new-user'){const roles=state.roles.filter(x=>x.code!=='PLATFORM_OPS');return openDialog('Add demo user','Create a synthetic tenant account. Role does not confer Admin access unless Tenant IT Admin.',field('tenant_id','Tenant','text',useTenant)+field('name','Display name')+field('email','Email','email')+field('password','Local demo password','password')+field('role_code','Persona','text','TENANT_IT_ADMIN',selectOptions(roles,x=>({value:x.code,label:x.name}))),async v=>api('/admin/users',{method:'POST',body:JSON.stringify(v)}));}
+ if(action==='new-tenant'){if(!canCreateTenant())return notification('Platform operator required',true);return openDialog('Register organization','Creates a REGISTERED tenant and DRAFT organization setup. Choose Carrier/TPA or IA Firm at registration.',field('name','Organization name')+field('slug','Unique slug')+field('organization_type','Organization type','text','CARRIER_TPA',[{value:'CARRIER_TPA',label:'Carrier / TPA'},{value:'IA_FIRM',label:'IA Firm'}])+field('operating_model','Operating model','text','HYBRID',[{value:'HYBRID',label:'Hybrid'},{value:'FIELD',label:'Field / IA'},{value:'DESK_ONLY',label:'Desk only'},{value:'CAT',label:'CAT'}])+field('primary_contact_name','Primary contact name','text','Onboarding Contact')+field('primary_contact_email','Primary contact email','email','onboarding@example.invalid'),async v=>api('/admin/tenants',{method:'POST',body:JSON.stringify(v)}));}
+ if(action==='edit-tenant'){const t=state.tenants.find(x=>x.id===id);return openDialog('Edit organization',`Updates only the local demo record for ${t.name}. Lifecycle status changes use Activate/Suspend.`,field('name','Organization name','text',t.name),async v=>api('/admin/tenants/'+id,{method:'PATCH',body:JSON.stringify(v)}));}
+ if(action==='new-user'){
+   const isPlatform=state.user.role_code==='PLATFORM_OPS';
+   const roles=state.roles.filter(x=>x.code!=='PLATFORM_OPS'&&(isPlatform||x.code!=='TENANT_IT_ADMIN'));
+   const defaultRole=roles.find(x=>x.code==='DESK_ADJUSTER')?.code||roles[0]?.code||'DESK_ADJUSTER';
+   return openDialog('Add demo user',isPlatform?'Platform Ops may provision Tenant IT Admin. Other roles are business personas.':'Tenant IT Admin cannot grant privileged Admin roles. Choose a business persona.',field('tenant_id','Tenant','text',useTenant)+field('name','Display name')+field('email','Email','email')+field('password','Local demo password','password')+field('role_code','Persona','text',defaultRole,selectOptions(roles,x=>({value:x.code,label:x.name}))),async v=>api('/admin/users',{method:'POST',body:JSON.stringify(v)}));
+ }
  if(action==='edit-user'){const users=await api(scoped('/admin/users'));const x=users.find(x=>x.id===id);return openDialog('Update user',`Profile edits only. Use Workforce Lifecycle for availability and offboarding so a reason is recorded.`,field('name','Name','text',x.name),async v=>api('/admin/users/'+id,{method:'PATCH',body:JSON.stringify({name:v.name})}));}
  if(action==='toggle-flag'){const x=state.flags?.find(x=>x.id===id);return openDialog(`Change ${x.key}`,`Current demo state: ${x.enabled?'enabled':'disabled'}. This does not affect other services.`,field('enabled','New state','text',String(!x.enabled),[{value:'true',label:'Enabled'},{value:'false',label:'Disabled'}])+field('reason','Reason for change'),async v=>api('/admin/features/'+id,{method:'PATCH',body:JSON.stringify({enabled:v.enabled==='true',reason:v.reason})}));}
  if(action==='toggle-ai'){const x=state.ai?.find(x=>x.id===id);return openDialog(`Change ${x.name}`,`The use case is demo-only. No AI inference is executed.`,field('enabled','New state','text',String(!x.enabled),[{value:'true',label:'Enabled'},{value:'false',label:'Disabled'}])+field('reason','Reason for change'),async v=>api('/admin/ai/use-cases/'+id,{method:'PATCH',body:JSON.stringify({enabled:v.enabled==='true',reason:v.reason})}));}

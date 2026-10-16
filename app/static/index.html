@@ -14,20 +14,16 @@
     <div class="brandmark">C<span>✦</span></div>
     <div class="eyebrow">CLAIMS OPERATIONS INTELLIGENCE</div>
     <h1>ClaimSpire <span>Admin</span></h1>
-    <p>Explore the Admin control plane with a local demonstration account.</p>
+    <p>Sign in with any provisioned Admin account. Newly created Tenant Administrators can log in here without code changes.</p>
     <form id="login-form">
-      <label for="login-email">Account</label>
-      <select id="login-email">
-        <option value="platform@claimspire.local">Platform Operations · All demo tenants</option>
-        <option value="admin@harbor.local">Harbor · Tenant Administrator</option>
-        <option value="admin@summit.local">Summit · Tenant Administrator</option>
-      </select>
-      <label for="login-password">Demo password</label>
-      <input id="login-password" type="password" value="DemoAdmin123!" autocomplete="off" required>
+      <label for="login-email">Email</label>
+      <input id="login-email" type="email" name="email" autocomplete="username" required placeholder="admin@harbor.local" value="">
+      <label for="login-password">Password</label>
+      <input id="login-password" type="password" name="password" autocomplete="current-password" required value="">
       <div id="login-error" class="error" role="alert"></div>
       <button type="submit" class="btn primary full">Open Admin Preview <span>→</span></button>
     </form>
-    <small>Demo identity and permissions only. No production accounts or personal data.</small>
+    <small>Demo accounts: <code>platform@claimspire.local</code>, <code>admin@harbor.local</code>, <code>admin@summit.local</code> — password <code>DemoAdmin123!</code></small>
   </div>
 </div>
 <div class="layout" id="app" hidden>

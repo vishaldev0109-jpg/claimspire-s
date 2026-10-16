@@ -3,15 +3,20 @@
 Client/design approval ownership and the exact five collection flows are unresolved.
 This local POC uses configurable illustrative sections and provisional Platform Ops approval.
 """
+import copy
+import re
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
+from app.catalogues import OPERATING_MODELS, ORG_TYPES
 from app.database import get_db
-from app.models import (Tenant, User, Claim, OrganizationSetup, OrganizationTeam,
-                        WorkforceStatus, WorkforceLifecycleEvent, OrganizationTeamMember)
-from app.schemas import (OrganizationSetupOut, SetupSectionIn, SetupSubmitIn, SetupDecisionIn, SetupOwnerIn,
-                         OrganizationTeamCreate, OrganizationTeamOut, WorkforceChangeIn, OrganizationTeamMemberCreate)
-from app.security import require_admin, require_platform, is_platform, permitted_tenant, mutation_tenant, assert_resource_access
+from app.models import (Tenant, User, Claim, OrganizationSetup, OrganizationSetupSubmission,
+                        OrganizationTeam, WorkforceStatus, WorkforceLifecycleEvent, OrganizationTeamMember)
+from app.models import utc_now
+from app.schemas import (OrganizationSetupOut, OrganizationSetupSubmissionOut, SetupSectionIn, SetupSubmitIn,
+                         SetupDecisionIn, SetupOwnerIn, OrganizationTeamCreate, OrganizationTeamOut,
+                         WorkforceChangeIn, OrganizationTeamMemberCreate)
+from app.security import require_admin, require_platform, permitted_tenant, mutation_tenant, assert_resource_access
 from app.helpers import audit, flush, save, ensure_tenant
 
 router = APIRouter(prefix='/admin', tags=['Admin: Organization & Workforce'])
@@ -25,8 +30,8 @@ SECTIONS = {
  'structure': {'label': 'Organization structure and teams', 'fields':['structure_summary','team_contact'], 'required':['structure_summary']},
  'branding': {'label': 'Branding basics', 'fields':['display_name','logo_reference'], 'required':['display_name']},
 }
-ORG_TYPES = frozenset(('CARRIER_TPA','IA_FIRM'))
 EDITABLE = frozenset(('DRAFT','CHANGES_REQUESTED'))
+EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 
 def setup_for(db, tenant_id):
     setup = db.scalar(select(OrganizationSetup).where(OrganizationSetup.tenant_id==tenant_id))
@@ -42,13 +47,55 @@ def missing(setup):
                 missing_fields.append(key+'.'+name)
     return missing_fields
 
+def validation_issues(setup):
+    """Typed/contextual checks beyond empty-field presence."""
+    issues=[]
+    sections=setup.sections or {}
+    profile=sections.get('profile') or {}
+    contacts=sections.get('contacts') or {}
+    coverage=sections.get('coverage') or {}
+    org_type=profile.get('organization_type') or setup.organization_type
+    if org_type and org_type not in ORG_TYPES:
+        issues.append({'field':'profile.organization_type','error':'UNSUPPORTED_ORGANIZATION_TYPE'})
+    op_model=profile.get('operating_model')
+    if op_model and op_model not in OPERATING_MODELS:
+        issues.append({'field':'profile.operating_model','error':'UNSUPPORTED_OPERATING_MODEL'})
+    email=contacts.get('primary_email')
+    if email and not EMAIL_RE.match(str(email)):
+        issues.append({'field':'contacts.primary_email','error':'INVALID_EMAIL'})
+    legal=profile.get('legal_name')
+    if legal is not None and isinstance(legal,str) and len(legal.strip()) < 2:
+        issues.append({'field':'profile.legal_name','error':'TOO_SHORT'})
+    lobs=coverage.get('lob_codes')
+    if lobs is not None:
+        if not isinstance(lobs,list) or not lobs:
+            issues.append({'field':'coverage.lob_codes','error':'LOB_CODES_REQUIRED'})
+        elif any(not isinstance(x,str) or not x.strip() for x in lobs):
+            issues.append({'field':'coverage.lob_codes','error':'INVALID_LOB_CODES'})
+    return issues
+
 def require_draft(setup):
     if setup.status not in EDITABLE:
         raise HTTPException(status_code=409, detail='Setup is submitted/approved; return for changes before editing')
 
+def check_version(setup, expected_version):
+    if expected_version is not None and expected_version != setup.version:
+        raise HTTPException(
+            status_code=409,
+            detail={'error':'VERSION_CONFLICT','current_version':setup.version,'expected_version':expected_version},
+        )
+
+def latest_open_submission(db, setup):
+    return db.scalar(
+        select(OrganizationSetupSubmission)
+        .where(OrganizationSetupSubmission.setup_id==setup.id, OrganizationSetupSubmission.decision.is_(None))
+        .order_by(OrganizationSetupSubmission.version.desc())
+    )
+
 @router.get('/organization-setup/sections')
 def get_sections(actor: User = Depends(require_admin)):
     return {'provisional':True,'description':'Five proposed collection groups; final design-provided flows pending confirmation',
+            'organization_types':sorted(ORG_TYPES),'operating_models':sorted(OPERATING_MODELS),
             'sections':[{'key':k, **v} for k,v in SECTIONS.items()]}
 
 @router.get('/organization-setup',response_model=list[OrganizationSetupOut])
@@ -68,15 +115,37 @@ def setup_readiness(tenant_id:str,db:Session=Depends(get_db),actor:User=Depends(
     assert_resource_access(actor,tenant_id)
     setup=setup_for(db,tenant_id)
     gaps=missing(setup)
-    return {'tenant_id':tenant_id,'status':setup.status,'ready_for_submission':not gaps,
-            'completed_required_fields':sum(len(x['required']) for x in SECTIONS.values())-len(gaps),
-            'total_required_fields':sum(len(x['required']) for x in SECTIONS.values()),
-            'missing_fields':gaps,'approval_role':'PLATFORM_OPS (DEMO ONLY; CLIENT DECISION PENDING)'}
+    issues=validation_issues(setup)
+    tenant=db.get(Tenant,tenant_id)
+    ready=not gaps and not issues
+    return {
+        'tenant_id':tenant_id,
+        'status':setup.status,
+        'version':setup.version,
+        'tenant_status':tenant.status if tenant else None,
+        'ready_for_submission':ready and setup.status in EDITABLE,
+        'completed_required_fields':sum(len(x['required']) for x in SECTIONS.values())-len(gaps),
+        'total_required_fields':sum(len(x['required']) for x in SECTIONS.values()),
+        'missing_fields':gaps,
+        'validation_issues':issues,
+        'activation_blocked_until':'Organization setup APPROVED and separate tenant activation',
+        'approval_role':'PLATFORM_OPS (DEMO ONLY; CLIENT DECISION PENDING)',
+    }
+
+@router.get('/organization-setup/{tenant_id}/submissions',response_model=list[OrganizationSetupSubmissionOut])
+def list_submissions(tenant_id:str,db:Session=Depends(get_db),actor:User=Depends(require_admin)):
+    assert_resource_access(actor,tenant_id)
+    setup=setup_for(db,tenant_id)
+    return db.scalars(
+        select(OrganizationSetupSubmission)
+        .where(OrganizationSetupSubmission.setup_id==setup.id)
+        .order_by(OrganizationSetupSubmission.version.desc())
+    ).all()
 
 @router.put('/organization-setup/{tenant_id}/sections/{section_key}',response_model=OrganizationSetupOut)
 def update_section(tenant_id:str,section_key:str,payload:SetupSectionIn,db:Session=Depends(get_db),actor:User=Depends(require_admin)):
     assert_resource_access(actor,tenant_id)
-    setup=setup_for(db,tenant_id);require_draft(setup)
+    setup=setup_for(db,tenant_id);require_draft(setup);check_version(setup,payload.expected_version)
     spec=SECTIONS.get(section_key)
     if spec is None:raise HTTPException(status_code=404,detail='Unknown collection section')
     extras=set(payload.data)-set(spec['fields'])
@@ -90,21 +159,31 @@ def update_section(tenant_id:str,section_key:str,payload:SetupSectionIn,db:Sessi
             value=[x.strip().upper() for x in value if x.strip()]
         elif not isinstance(value,str) or len(value)>500:
             raise HTTPException(status_code=422,detail=f'{key} must be text of at most 500 characters')
+        if key=='organization_type' and value and value not in ORG_TYPES:
+            raise HTTPException(status_code=422,detail='Organization type must be CARRIER_TPA or IA_FIRM')
+        if key=='operating_model' and value and value not in OPERATING_MODELS:
+            raise HTTPException(status_code=422,detail=f'operating_model must be one of: {", ".join(sorted(OPERATING_MODELS))}')
+        if key=='primary_email' and value and not EMAIL_RE.match(value):
+            raise HTTPException(status_code=422,detail='primary_email must be a valid email address')
         group[key]=value
     if section_key=='profile':
         orgtype=group.get('organization_type','')
-        if orgtype and orgtype not in ORG_TYPES:
-            raise HTTPException(status_code=422,detail='Organization type must be CARRIER_TPA or IA_FIRM')
         if orgtype:setup.organization_type=orgtype
+        op_model=group.get('operating_model')
+        if op_model:
+            tenant=db.get(Tenant,tenant_id)
+            if tenant and tenant.operating_model != op_model:
+                # Keep tenant operating model aligned when edited during draft setup.
+                tenant.operating_model=op_model
     data[section_key]=group
     setup.sections=data
-    audit(db,actor,'organization.section.saved','organization_setup',setup.id,tenant_id,{'section':section_key,'field_keys':list(payload.data)})
+    audit(db,actor,'organization.section.saved','organization_setup',setup.id,tenant_id,{'section':section_key,'field_keys':list(payload.data),'version':setup.version})
     save(db);db.refresh(setup);return setup
 
 @router.put('/organization-setup/{tenant_id}/owner',response_model=OrganizationSetupOut)
 def assign_owner(tenant_id:str,payload:SetupOwnerIn,db:Session=Depends(get_db),actor:User=Depends(require_admin)):
     assert_resource_access(actor,tenant_id)
-    setup=setup_for(db,tenant_id);require_draft(setup)
+    setup=setup_for(db,tenant_id);require_draft(setup);check_version(setup,payload.expected_version)
     owner=db.get(User,payload.responsible_user_id)
     if not owner or owner.tenant_id!=tenant_id or not owner.is_active:
         raise HTTPException(status_code=422,detail='Owner must be an active user in this tenant')
@@ -115,28 +194,56 @@ def assign_owner(tenant_id:str,payload:SetupOwnerIn,db:Session=Depends(get_db),a
 @router.post('/organization-setup/{tenant_id}/submit',response_model=OrganizationSetupOut)
 def submit_setup(tenant_id:str,payload:SetupSubmitIn,db:Session=Depends(get_db),actor:User=Depends(require_admin)):
     assert_resource_access(actor,tenant_id)
-    setup=setup_for(db,tenant_id);require_draft(setup)
+    setup=setup_for(db,tenant_id);require_draft(setup);check_version(setup,payload.expected_version)
     gaps=missing(setup)
     if gaps:raise HTTPException(status_code=409,detail={'error':'INCOMPLETE_SETUP','missing_fields':gaps})
+    issues=validation_issues(setup)
+    if issues:raise HTTPException(status_code=409,detail={'error':'INVALID_SETUP','validation_issues':issues})
     if not setup.responsible_user_id:
         raise HTTPException(status_code=409,detail={'error':'MISSING_RESPONSIBLE_ADMIN'})
+    setup.version = (setup.version or 1) + 1
+    snapshot = OrganizationSetupSubmission(
+        setup_id=setup.id,
+        tenant_id=tenant_id,
+        version=setup.version,
+        organization_type=setup.organization_type,
+        sections_snapshot=copy.deepcopy(setup.sections or {}),
+        submitted_by_id=actor.id,
+        submit_reason=payload.reason,
+    )
+    db.add(snapshot)
     setup.status='IN_REVIEW';setup.submitted_by_id=actor.id;setup.review_note=''
-    audit(db,actor,'organization.setup.submitted','organization_setup',setup.id,tenant_id,{'reason':payload.reason})
+    audit(db,actor,'organization.setup.submitted','organization_setup',setup.id,tenant_id,{
+        'reason':payload.reason,'version':setup.version,'submission_pending':True,
+    })
     save(db);db.refresh(setup);return setup
 
 @router.post('/organization-setup/{tenant_id}/decision',response_model=OrganizationSetupOut)
 def decide_setup(tenant_id:str,payload:SetupDecisionIn,db:Session=Depends(get_db),actor:User=Depends(require_platform)):
     setup=setup_for(db,tenant_id)
     if setup.status!='IN_REVIEW':raise HTTPException(status_code=409,detail='Setup must be IN_REVIEW')
+    check_version(setup,payload.expected_version)
     if setup.submitted_by_id == actor.id:
         raise HTTPException(status_code=409,detail='Demo separation-of-duties: submitter cannot approve own setup')
+    submission=latest_open_submission(db,setup)
     if payload.decision=='APPROVE':
         if missing(setup):raise HTTPException(status_code=409,detail='Incomplete setup cannot be approved')
+        if validation_issues(setup):raise HTTPException(status_code=409,detail='Invalid setup cannot be approved')
         setup.status='APPROVED';setup.approved_by_id=actor.id
+        # Approval does NOT activate the tenant — use POST /admin/tenants/{id}/activate.
     else:
         setup.status='CHANGES_REQUESTED';setup.approved_by_id=None
     setup.review_note=payload.note
-    audit(db,actor,'organization.setup.reviewed','organization_setup',setup.id,tenant_id,{'decision':payload.decision,'note':payload.note})
+    if submission:
+        submission.decision=payload.decision
+        submission.decided_by_id=actor.id
+        submission.decision_note=payload.note
+        submission.decided_at=utc_now()
+    audit(db,actor,'organization.setup.reviewed','organization_setup',setup.id,tenant_id,{
+        'decision':payload.decision,'note':payload.note,'version':setup.version,
+        'submission_id':submission.id if submission else None,
+        'tenant_remains_inactive_until_activation':True,
+    })
     save(db);db.refresh(setup);return setup
 
 @router.get('/organization-teams',response_model=list[OrganizationTeamOut])
@@ -217,7 +324,6 @@ def change_workforce_status(user_id:str,data:WorkforceChangeIn,db:Session=Depend
         status=WorkforceStatus(user_id=user.id,tenant_id=user.tenant_id,status=data.status);db.add(status)
     else:status.status=data.status
     if data.status=='OFFBOARDED':user.is_active=False
-    # UNAVAILABLE is separate from login disablement: no automatic claim reassignment is simulated.
     audit(db,actor,'workforce.status.changed','user',user.id,user.tenant_id,
           {'before':previous,'after':data.status,'reason':data.reason,'login_active':user.is_active})
     db.add(WorkforceLifecycleEvent(tenant_id=user.tenant_id,user_id=user.id,actor_id=actor.id,

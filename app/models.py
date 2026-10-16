@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
@@ -22,7 +22,8 @@ class Tenant(Base, TimeStamped):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     slug: Mapped[str] = mapped_column(String(80), unique=True, nullable=False, index=True)
     operating_model: Mapped[str] = mapped_column(String(40), default='HYBRID')
-    status: Mapped[str] = mapped_column(String(30), default='ACTIVE')
+    # REGISTERED = created but not operational; ACTIVE = demo-operational after activation gate.
+    status: Mapped[str] = mapped_column(String(30), default='REGISTERED')
 
 class Role(Base):
     __tablename__ = 'roles'
@@ -154,10 +155,28 @@ class OrganizationSetup(Base, TimeStamped):
     responsible_user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
     sections: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(30), default='DRAFT')
+    version: Mapped[int] = mapped_column(Integer, default=1)
     submitted_by_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
     approved_by_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
     review_note: Mapped[str] = mapped_column(String(500), default='')
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+class OrganizationSetupSubmission(Base, TimeStamped):
+    """Immutable snapshot of a submitted organization setup version."""
+    __tablename__ = 'organization_setup_submissions'
+    __table_args__ = (UniqueConstraint('setup_id', 'version', name='uq_setup_submission_version'),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    setup_id: Mapped[str] = mapped_column(ForeignKey('organization_setups.id'), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id'), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    organization_type: Mapped[str] = mapped_column(String(30))
+    sections_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    submitted_by_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    submit_reason: Mapped[str] = mapped_column(String(300), default='')
+    decision: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    decided_by_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
+    decision_note: Mapped[str] = mapped_column(String(500), default='')
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 class OrganizationTeam(Base, TimeStamped):
     __tablename__ = 'organization_teams'

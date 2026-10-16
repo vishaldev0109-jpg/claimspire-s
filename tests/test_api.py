@@ -89,13 +89,15 @@ def test_ai_kill_switch_and_cross_tenant_guard(client,harbor_headers,platform_he
     assert len(audit)>=1
 
 def test_duplicate_tenant_returns_conflict(client,platform_headers):
-    r=client.post('/api/v1/admin/tenants',headers=platform_headers,json={'name':'Harbor Copy','slug':'harbor-mutual','operating_model':'HYBRID'})
+    r=client.post('/api/v1/admin/tenants',headers=platform_headers,json={'name':'Harbor Copy','slug':'harbor-mutual','organization_type':'CARRIER_TPA','operating_model':'HYBRID'})
     assert r.status_code==409,r.text
 
 def test_demo_interface_is_served_without_auth(client):
     page = client.get('/demo')
     assert page.status_code == 200
     assert 'ClaimSpire' in page.text and 'LOCAL PROTOTYPE' in page.text
+    assert 'type="email"' in page.text
+    assert '<select id="login-email">' not in page.text
     assert client.get('/demo-assets/app.js').status_code == 200
     assert client.get('/demo-assets/styles.css').status_code == 200
 
@@ -158,13 +160,16 @@ def test_organization_collect_submit_review(client, harbor_headers, platform_hea
 
 
 def test_setup_provisional_approver_and_new_tenant_draft(client, platform_headers):
-    r=client.post('/api/v1/admin/tenants',headers=platform_headers,json={'name':'New POC Carrier','slug':'new-poc-carrier','operating_model':'HYBRID'})
+    r=client.post('/api/v1/admin/tenants',headers=platform_headers,json={'name':'New POC Carrier','slug':'new-poc-carrier','organization_type':'CARRIER_TPA','operating_model':'HYBRID'})
     assert r.status_code==201
+    assert r.json()['status']=='REGISTERED'
     tid=r.json()['id']
     setup=client.get(f'/api/v1/admin/organization-setup/{tid}',headers=platform_headers)
     assert setup.status_code==200 and setup.json()['status']=='DRAFT'
-    assert setup.json()['sections']=={}
+    assert setup.json()['organization_type']=='CARRIER_TPA'
+    assert setup.json()['sections']['profile']['organization_type']=='CARRIER_TPA'
     assert client.post(f'/api/v1/admin/organization-setup/{tid}/decision',headers=platform_headers,json={'decision':'APPROVE','note':'Trying to bypass setup'}).status_code==409
+    assert client.post(f'/api/v1/admin/tenants/{tid}/activate',headers=platform_headers).status_code==409
 
 
 def test_workforce_availability_offboarding_and_events(client, harbor_headers, platform_headers):
@@ -218,3 +223,121 @@ def test_team_membership_and_workload_review_flag(client, harbor_headers, platfo
     assert change.json()['assigned_demo_claims']>0
     assert client.delete(f"/api/v1/admin/organization-teams/{team['id']}/members/{desk['id']}",headers=harbor_headers).status_code==204
     assert client.get(f"/api/v1/admin/organization-teams/{team['id']}/members",headers=harbor_headers).json()==[]
+
+
+def test_tenant_admin_cannot_provision_privileged_admin(client, harbor_headers, platform_headers):
+    denied=client.post('/api/v1/admin/users',headers=harbor_headers,json={
+        'name':'Unauthorized Admin','email':'bad-admin@harbor.local','password':'Demo123Password!','role_code':'TENANT_IT_ADMIN'
+    })
+    assert denied.status_code==403
+    allowed=client.post('/api/v1/admin/users',headers=platform_headers,json={
+        'tenant_id':client.get('/api/v1/admin/tenants',headers=harbor_headers).json()[0]['id'],
+        'name':'Authorized Admin','email':'ok-admin@harbor.local','password':'Demo123Password!','role_code':'TENANT_IT_ADMIN'
+    })
+    assert allowed.status_code==201,allowed.text
+    # New privileged admin can log into Admin APIs
+    login=client.post('/api/v1/auth/login',json={'email':'ok-admin@harbor.local','password':'Demo123Password!'})
+    assert login.status_code==200
+    h={'Authorization':'Bearer '+login.json()['access_token']}
+    assert client.get('/api/v1/admin/tenants',headers=h).status_code==200
+
+
+def test_ia_registration_submit_snapshot_and_activation(client, platform_headers):
+    created=client.post('/api/v1/admin/tenants',headers=platform_headers,json={
+        'name':'Riverside Claims Services','slug':'riverside-claims','organization_type':'IA_FIRM',
+        'operating_model':'FIELD','primary_contact_name':'Riverside Admin','primary_contact_email':'admin@riverside.local'
+    })
+    assert created.status_code==201,created.text
+    assert created.json()['status']=='REGISTERED'
+    tid=created.json()['id']
+    setup=client.get(f'/api/v1/admin/organization-setup/{tid}',headers=platform_headers).json()
+    assert setup['organization_type']=='IA_FIRM'
+    admin=client.post('/api/v1/admin/users',headers=platform_headers,json={
+        'tenant_id':tid,'name':'Riverside Tenant Admin','email':'admin@riverside.local',
+        'password':'DemoAdmin123!','role_code':'TENANT_IT_ADMIN'
+    })
+    assert admin.status_code==201,admin.text
+    admin_headers={'Authorization':'Bearer '+client.post('/api/v1/auth/login',json={'email':'admin@riverside.local','password':'DemoAdmin123!'}).json()['access_token']}
+    assert len(client.get('/api/v1/admin/tenants',headers=admin_headers).json())==1
+    edits={
+        'profile':{'legal_name':'Riverside Claims Services','organization_type':'IA_FIRM','operating_model':'FIELD'},
+        'contacts':{'primary_email':'admin@riverside.local','street_address':'100 Demo Street'},
+        'coverage':{'lob_codes':['PROPERTY'],'license_reference':'IA-LIC-DEMO'},
+        'structure':{'structure_summary':'Dispatch > Field > QA'},
+        'branding':{'display_name':'Riverside Claims'},
+    }
+    for key,payload in edits.items():
+        assert client.put(f'/api/v1/admin/organization-setup/{tid}/sections/{key}',headers=admin_headers,json={'data':payload}).status_code==200
+    assert client.put(f'/api/v1/admin/organization-setup/{tid}/owner',headers=admin_headers,json={'responsible_user_id':admin.json()['id']}).status_code==200
+    submitted=client.post(f'/api/v1/admin/organization-setup/{tid}/submit',headers=admin_headers,json={'reason':'Riverside ready for review'})
+    assert submitted.status_code==200 and submitted.json()['status']=='IN_REVIEW'
+    assert submitted.json()['version']==2
+    snaps=client.get(f'/api/v1/admin/organization-setup/{tid}/submissions',headers=platform_headers).json()
+    assert len(snaps)==1 and snaps[0]['version']==2 and snaps[0]['decision'] is None
+    # Stale version is rejected
+    assert client.put(f'/api/v1/admin/organization-setup/{tid}/sections/branding',headers=admin_headers,json={'data':{'display_name':'x'},'expected_version':1}).status_code==409
+    reviewed=client.post(f'/api/v1/admin/organization-setup/{tid}/decision',headers=platform_headers,json={'decision':'APPROVE','note':'Riverside setup accepted for demo'})
+    assert reviewed.status_code==200 and reviewed.json()['status']=='APPROVED'
+    snaps=client.get(f'/api/v1/admin/organization-setup/{tid}/submissions',headers=platform_headers).json()
+    assert snaps[0]['decision']=='APPROVE'
+    # Approval alone does not activate
+    assert client.get(f'/api/v1/admin/tenants/{tid}',headers=platform_headers).json()['status']=='REGISTERED'
+    activated=client.post(f'/api/v1/admin/tenants/{tid}/activate',headers=platform_headers)
+    assert activated.status_code==200 and activated.json()['status']=='ACTIVE'
+
+
+def test_invalid_organization_type_rejected(client, platform_headers):
+    r=client.post('/api/v1/admin/tenants',headers=platform_headers,json={
+        'name':'Bad Type Co','slug':'bad-type-co','organization_type':'BROKER','operating_model':'HYBRID'
+    })
+    assert r.status_code==422
+
+
+def test_multi_tenant_isolation_harbor_vs_summit(client, harbor_headers, platform_headers):
+    """Harbor Tenant Admin must never read or mutate Summit data."""
+    harbor=client.get('/api/v1/admin/tenants',headers=harbor_headers).json()
+    assert len(harbor)==1
+    harbor_id=harbor[0]['id']
+    all_tenants=client.get('/api/v1/admin/tenants',headers=platform_headers).json()
+    summit_id=next(t['id'] for t in all_tenants if t['id']!=harbor_id and t['slug']=='summit-ia')
+    # Lists stay Harbor-only even without tenant_id query param
+    assert all(u['tenant_id']==harbor_id for u in client.get('/api/v1/admin/users',headers=harbor_headers).json())
+    assert all(c['tenant_id']==harbor_id for c in client.get('/api/v1/admin/claims',headers=harbor_headers).json())
+    assert all(f['tenant_id']==harbor_id for f in client.get('/api/v1/admin/features',headers=harbor_headers).json())
+    assert all(a['tenant_id']==harbor_id for a in client.get('/api/v1/admin/audit-events',headers=harbor_headers).json() if a['tenant_id'])
+    # Explicit cross-tenant probes
+    for path in [
+        f'/api/v1/admin/tenants/{summit_id}',
+        f'/api/v1/admin/organization-setup/{summit_id}',
+        f'/api/v1/admin/organization-setup/{summit_id}/readiness',
+    ]:
+        assert client.get(path,headers=harbor_headers).status_code==403
+    assert client.get('/api/v1/admin/claims',headers=harbor_headers,params={'tenant_id':summit_id}).status_code==403
+    assert client.get('/api/v1/admin/users',headers=harbor_headers,params={'tenant_id':summit_id}).status_code==403
+    assert client.get('/api/v1/admin/features',headers=harbor_headers,params={'tenant_id':summit_id}).status_code==403
+    perms=client.get('/api/v1/admin/permissions',headers=harbor_headers).json()
+    assert perms['tenant_scope']=='OWN_TENANT_ONLY'
+    assert perms['tenant_id']==harbor_id
+    assert perms['isolation'].startswith('API-enforced')
+
+
+def test_suspended_tenant_blocks_tenant_admin(client, platform_headers):
+    created=client.post('/api/v1/admin/tenants',headers=platform_headers,json={
+        'name':'Paused Mutual','slug':'paused-mutual','organization_type':'CARRIER_TPA','operating_model':'HYBRID'
+    })
+    assert created.status_code==201
+    tid=created.json()['id']
+    admin=client.post('/api/v1/admin/users',headers=platform_headers,json={
+        'tenant_id':tid,'name':'Paused Admin','email':'admin@paused.local',
+        'password':'DemoAdmin123!','role_code':'TENANT_IT_ADMIN'
+    })
+    assert admin.status_code==201
+    login=client.post('/api/v1/auth/login',json={'email':'admin@paused.local','password':'DemoAdmin123!'})
+    assert login.status_code==200
+    h={'Authorization':'Bearer '+login.json()['access_token']}
+    assert client.get('/api/v1/admin/tenants',headers=h).status_code==200
+    assert client.post(f'/api/v1/admin/tenants/{tid}/suspend',headers=platform_headers).status_code==200
+    assert client.get('/api/v1/admin/tenants',headers=h).status_code==403
+    assert client.get('/api/v1/admin/dashboard/summary',headers=h).status_code==403
+    # Platform Ops can still manage the suspended tenant
+    assert client.get(f'/api/v1/admin/tenants/{tid}',headers=platform_headers).json()['status']=='SUSPENDED'

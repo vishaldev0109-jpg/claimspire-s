@@ -30,8 +30,10 @@ def seed_demo_data(db: Session):
     if db.scalar(select(Tenant.id).limit(1)):
         return
     db.add_all([Role(code=code,name=name,purpose=purpose,primary_surface=surface) for code,name,purpose,surface in PERSONAS])
-    acme=Tenant(name='Harbor Mutual Insurance (DEMO)',slug='harbor-mutual',operating_model='HYBRID')
-    north=Tenant(name='Summit Independent Adjusting (DEMO)',slug='summit-ia',operating_model='FIELD')
+    # Seeded demo tenants are already ACTIVE so the walkthrough works immediately.
+    # Newly registered tenants start as REGISTERED until setup approval + activation.
+    acme=Tenant(name='Harbor Mutual Insurance (DEMO)',slug='harbor-mutual',operating_model='HYBRID',status='ACTIVE')
+    north=Tenant(name='Summit Independent Adjusting (DEMO)',slug='summit-ia',operating_model='FIELD',status='ACTIVE')
     db.add_all([acme,north]);db.flush()
     users=[
         User(name='Platform Operator',email='platform@claimspire.local',tenant_id=None,role_code='PLATFORM_OPS',password_hash=hash_password(DEMO_PASSWORD)),

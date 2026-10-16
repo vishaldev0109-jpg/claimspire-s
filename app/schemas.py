@@ -1,7 +1,8 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from app.catalogues import OPERATING_MODELS, ORG_TYPES, TENANT_STATUSES
 
 class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -17,12 +18,43 @@ class TokenOut(BaseModel):
 class TenantCreate(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     slug: str = Field(pattern=r'^[a-z][a-z0-9-]{2,79}$')
+    organization_type: str
     operating_model: str = 'HYBRID'
+    primary_contact_name: str | None = Field(default=None, max_length=120)
+    primary_contact_email: str | None = Field(default=None, max_length=180)
+
+    @field_validator('organization_type')
+    @classmethod
+    def check_org_type(cls, value: str) -> str:
+        if value not in ORG_TYPES:
+            raise ValueError('organization_type must be CARRIER_TPA or IA_FIRM')
+        return value
+
+    @field_validator('operating_model')
+    @classmethod
+    def check_operating_model(cls, value: str) -> str:
+        if value not in OPERATING_MODELS:
+            raise ValueError(f'operating_model must be one of: {", ".join(sorted(OPERATING_MODELS))}')
+        return value
 
 class TenantPatch(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=120)
     operating_model: str | None = None
     status: str | None = None
+
+    @field_validator('operating_model')
+    @classmethod
+    def check_operating_model(cls, value: str | None) -> str | None:
+        if value is not None and value not in OPERATING_MODELS:
+            raise ValueError(f'operating_model must be one of: {", ".join(sorted(OPERATING_MODELS))}')
+        return value
+
+    @field_validator('status')
+    @classmethod
+    def check_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in TENANT_STATUSES:
+            raise ValueError(f'status must be one of: {", ".join(sorted(TENANT_STATUSES))}')
+        return value
 
 class TenantOut(ORMModel):
     id: str
@@ -200,16 +232,20 @@ class AuditOut(ORMModel):
 # v0.3 demo organization/workforce flows. Five collection sections are proposed placeholders.
 class SetupSectionIn(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
+    expected_version: int | None = None
 
 class SetupSubmitIn(BaseModel):
     reason: str = Field(min_length=5, max_length=300)
+    expected_version: int | None = None
 
 class SetupDecisionIn(BaseModel):
     decision: str = Field(pattern=r'^(APPROVE|RETURN_FOR_CHANGES)$')
     note: str = Field(min_length=5, max_length=500)
+    expected_version: int | None = None
 
 class SetupOwnerIn(BaseModel):
     responsible_user_id: str
+    expected_version: int | None = None
 
 class OrganizationSetupOut(ORMModel):
     id: str
@@ -218,11 +254,27 @@ class OrganizationSetupOut(ORMModel):
     responsible_user_id: str | None
     sections: dict[str, Any]
     status: str
+    version: int
     submitted_by_id: str | None
     approved_by_id: str | None
     review_note: str
     created_at: datetime
     updated_at: datetime
+
+class OrganizationSetupSubmissionOut(ORMModel):
+    id: str
+    setup_id: str
+    tenant_id: str
+    version: int
+    organization_type: str
+    sections_snapshot: dict[str, Any]
+    submitted_by_id: str
+    submit_reason: str
+    decision: str | None
+    decided_by_id: str | None
+    decision_note: str
+    decided_at: datetime | None
+    created_at: datetime
 
 class OrganizationTeamCreate(BaseModel):
     tenant_id: str | None = None
