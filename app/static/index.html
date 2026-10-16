@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>ClaimSpire | Admin Preview</title>
+  <link rel="stylesheet" href="/demo-assets/styles.css">
+</head>
+<body>
+<div class="demo-ribbon">LOCAL PROTOTYPE <span>·</span> Synthetic data <span>·</span> No AWS, payments or AI requests</div>
+<div id="login-overlay" class="overlay">
+  <div class="login-card">
+    <div class="brandmark">C<span>✦</span></div>
+    <div class="eyebrow">CLAIMS OPERATIONS INTELLIGENCE</div>
+    <h1>ClaimSpire <span>Admin</span></h1>
+    <p>Explore the Admin control plane with a local demonstration account.</p>
+    <form id="login-form">
+      <label for="login-email">Account</label>
+      <select id="login-email">
+        <option value="platform@claimspire.local">Platform Operations · All demo tenants</option>
+        <option value="admin@harbor.local">Harbor · Tenant Administrator</option>
+        <option value="admin@summit.local">Summit · Tenant Administrator</option>
+      </select>
+      <label for="login-password">Demo password</label>
+      <input id="login-password" type="password" value="DemoAdmin123!" autocomplete="off" required>
+      <div id="login-error" class="error" role="alert"></div>
+      <button type="submit" class="btn primary full">Open Admin Preview <span>→</span></button>
+    </form>
+    <small>Demo identity and permissions only. No production accounts or personal data.</small>
+  </div>
+</div>
+<div class="layout" id="app" hidden>
+  <aside class="sidebar">
+    <div class="side-logo"><div class="brandmark small">C<span>✦</span></div><div><strong>ClaimSpire</strong><small>ADMIN CONSOLE</small></div></div>
+    <div class="side-section">WORKSPACE</div>
+    <nav id="nav" aria-label="Admin navigation"></nav>
+    <div class="sidebar-bottom"><div class="mini-dot"></div><div>Local prototype<br><small>All records are synthetic</small></div></div>
+  </aside>
+  <main class="main">
+    <header class="topbar">
+      <div class="crumb"><span>ClaimSpire</span><span class="chevron">/</span><strong id="crumb-current">Overview</strong></div>
+      <div class="top-actions">
+        <select id="tenant-filter" aria-label="Tenant filter"></select>
+        <span id="role-chip" class="role-chip"></span>
+        <button id="logout" class="btn subtle">Sign out</button>
+      </div>
+    </header>
+    <div class="content">
+      <section class="page-head"><div><div class="eyebrow">CLAIMSPIRE / ADMIN EXPERIENCE</div><h1 id="page-title">Overview</h1><p id="page-subtitle">High-level operating visibility for the ClaimSpire platform.</p></div><div class="head-actions" id="head-actions"></div></section>
+      <div id="message" role="status" aria-live="polite"></div>
+      <section id="content-area" aria-label="Admin content"></section>
+    </div>
+  </main>
+</div>
+<dialog id="edit-dialog"><form id="edit-form" method="dialog"><div class="dialog-top"><div><div class="eyebrow">LOCAL DEMO CONFIGURATION</div><h2 id="dialog-title">Update configuration</h2></div><button class="iconbtn" type="button" id="dialog-close" aria-label="Close">✕</button></div><p id="dialog-description" class="muted"></p><div id="dialog-fields"></div><div id="dialog-error" class="error" role="alert"></div><div class="dialog-actions"><button class="btn subtle" type="button" id="dialog-cancel">Cancel</button><button class="btn primary" type="submit" id="dialog-save">Save</button></div></form></dialog>
+<script src="/demo-assets/app.js"></script>
+</body>
+</html>
